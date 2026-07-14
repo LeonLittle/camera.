@@ -1,0 +1,156 @@
+name: Quick firmware comparison
+
+on:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  compare:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y p7zip-full file e2fsprogs android-sdk-libsparse-utils abootimg cpio gzip lz4
+
+      - name: Download releases
+        run: |
+          mkdir -p input/v1 input/v2
+          gh release download firmware-v1 --repo "$GITHUB_REPOSITORY" --dir input/v1
+          gh release download firmware-v2 --repo "$GITHUB_REPOSITORY" --dir input/v2
+
+      - name: Build compact comparison
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          mkdir -p work report
+
+          inspect() {
+            tag="$1"
+            src="$2"
+            out="work/$tag"
+            mkdir -p "$out/pkg" "$out/boot" "$out/ramdisk"
+            asset="$(find "$src" -maxdepth 1 -type f -print -quit)"
+            7z x -y "$asset" -o"$out/pkg" >/dev/null
+
+            scatter="$(find "$out/pkg" -type f -iname '*scatter*.txt' -print -quit || true)"
+            system="$(find "$out/pkg" -type f -iname 'system.img' -print -quit || true)"
+            boot="$(find "$out/pkg" -type f -iname 'boot.img' -print -quit || true)"
+
+            {
+              echo "asset=$(basename "$asset")"
+              echo "asset_size=$(stat -c %s "$asset")"
+              echo "asset_sha256=$(sha256sum "$asset" | awk '{print $1}')"
+              echo "scatter=$(basename "${scatter:-none}")"
+              echo "system=$(basename "${system:-none}")"
+              echo "boot=$(basename "${boot:-none}")"
+            } > "$out/summary.txt"
+
+            if [[ -n "$scatter" ]]; then
+              grep -E '^(platform:|project:|storage:|boot_channel:|block_size:|  partition_name:|  file_name:|  partition_size:)' "$scatter" > "$out/scatter.txt" || true
+            else
+              : > "$out/scatter.txt"
+            fi
+
+            if [[ -n "$system" ]]; then
+              raw="$system"
+              if [[ "$(xxd -p -l 4 "$system")" == "3aff26ed" ]]; then
+                raw="$out/system.raw.img"
+                simg2img "$system" "$raw"
+              fi
+              {
+                file "$system"
+                file "$raw"
+              } > "$out/system_type.txt"
+              debugfs -R 'cat build.prop' "$raw" 2>/dev/null > "$out/build.prop" || true
+              grep -E '^(ro\.(build|product|board|hardware|secure|debuggable|adb|crypto|treble)|persist\.sys\.usb|persist\.service\.adb)' "$out/build.prop" | sort -u > "$out/build_props.txt" || true
+              debugfs -R 'ls -p app' "$raw" 2>/dev/null > "$out/app_dirs.txt" || true
+              debugfs -R 'ls -p priv-app' "$raw" 2>/dev/null > "$out/priv_app_dirs.txt" || true
+            else
+              : > "$out/system_type.txt"
+              : > "$out/build_props.txt"
+              : > "$out/app_dirs.txt"
+              : > "$out/priv_app_dirs.txt"
+            fi
+
+            if [[ -n "$boot" ]]; then
+              (cd "$out/boot" && abootimg -x "$OLDPWD/$boot" >/dev/null 2>&1) || true
+              if [[ -f "$out/boot/initrd.img" ]]; then
+                ramdisk_type="$(file -b "$out/boot/initrd.img")"
+                case "$ramdisk_type" in
+                  *gzip*) (cd "$out/ramdisk" && gzip -dc ../boot/initrd.img | cpio -idm --no-absolute-filenames) >/dev/null 2>&1 || true ;;
+                  *LZ4*|*lz4*) (cd "$out/ramdisk" && lz4 -dc ../boot/initrd.img | cpio -idm --no-absolute-filenames) >/dev/null 2>&1 || true ;;
+                  *) (cd "$out/ramdisk" && cpio -idm --no-absolute-filenames < ../boot/initrd.img) >/dev/null 2>&1 || true ;;
+                esac
+              fi
+              find "$out/ramdisk" -type f \( -name 'fstab*' -o -name 'default.prop' -o -name 'init*.rc' \) -print0 | while IFS= read -r -d '' f; do
+                echo "--- ${f#$out/ramdisk/}"
+                grep -Eni 'verify|verity|avb|forceencrypt|encryptable|ro\.secure|ro\.debuggable|ro\.adb\.secure|persist\.sys\.usb\.config' "$f" || true
+              done > "$out/boot_security.txt"
+            else
+              : > "$out/boot_security.txt"
+            fi
+          }
+
+          inspect firmware-v1 input/v1
+          inspect firmware-v2 input/v2
+
+          {
+            echo '# Firmware v1 vs v2 compact comparison'
+            echo
+            for tag in firmware-v1 firmware-v2; do
+              echo "## $tag"
+              echo '```text'
+              cat "work/$tag/summary.txt"
+              cat "work/$tag/system_type.txt"
+              echo '```'
+              echo
+              echo '### Build properties'
+              echo '```properties'
+              cat "work/$tag/build_props.txt"
+              echo '```'
+              echo
+              echo '### Boot verification and encryption'
+              echo '```text'
+              cat "work/$tag/boot_security.txt"
+              echo '```'
+              echo
+              echo '### Top-level app directories'
+              echo '```text'
+              cat "work/$tag/app_dirs.txt"
+              cat "work/$tag/priv_app_dirs.txt"
+              echo '```'
+            done
+
+            echo '## Scatter differences'
+            echo '```diff'
+            diff -u work/firmware-v1/scatter.txt work/firmware-v2/scatter.txt || true
+            echo '```'
+            echo
+            echo '## Build property differences'
+            echo '```diff'
+            diff -u work/firmware-v1/build_props.txt work/firmware-v2/build_props.txt || true
+            echo '```'
+            echo
+            echo '## Boot-security differences'
+            echo '```diff'
+            diff -u work/firmware-v1/boot_security.txt work/firmware-v2/boot_security.txt || true
+            echo '```'
+          } > report/firmware_comparison_compact.md
+
+          sed -n '1,500p' report/firmware_comparison_compact.md
+
+      - name: Upload compact report
+        uses: actions/upload-artifact@v4
+        with:
+          name: firmware-comparison-compact
+          path: report/firmware_comparison_compact.md
+          retention-days: 7
