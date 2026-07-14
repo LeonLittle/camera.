@@ -15,7 +15,142 @@ jobs:
       GH_TOKEN: ${{ github.token }}
     steps:
       - uses: actions/checkout@v4
+
       - name: Install tools
         run: |
           sudo apt-get update
-          sudo apt-get install -y p7zip-full file binutils e2fsprogs android-sdk
+          sudo apt-get install -y p7zip-full file binutils e2fsprogs android-sdk-libsparse-utils abootimg cpio gzip lz4
+
+      - name: Download both releases
+        run: |
+          mkdir -p fw1 fw2
+          gh release download firmware-v1 --repo "$GITHUB_REPOSITORY" --dir fw1
+          gh release download firmware-v2 --repo "$GITHUB_REPOSITORY" --dir fw2
+          sha256sum fw1/* fw2/*
+
+      - name: Analyze and compare
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          mkdir -p work report
+
+          analyze_one() {
+            tag="$1"; src="$2"; out="work/$tag"
+            mkdir -p "$out/pkg" "$out/system" "$out/boot" "$out/ramdisk"
+            asset="$(find "$src" -maxdepth 1 -type f -print -quit)"
+            7z x -y "$asset" -o"$out/pkg" >/dev/null
+
+            scatter="$(find "$out/pkg" -type f -iname '*scatter*.txt' -print -quit || true)"
+            system="$(find "$out/pkg" -type f -iname 'system.img' -print -quit || true)"
+            boot="$(find "$out/pkg" -type f -iname 'boot.img' -print -quit || true)"
+
+            {
+              echo "tag=$tag"
+              echo "asset=$(basename "$asset")"
+              echo "asset_size=$(stat -c %s "$asset")"
+              echo "asset_sha256=$(sha256sum "$asset" | awk '{print $1}')"
+              echo "scatter=$(basename "${scatter:-none}")"
+              echo "system=$(basename "${system:-none}")"
+              echo "boot=$(basename "${boot:-none}")"
+            } > "$out/summary.txt"
+
+            if [[ -n "$scatter" ]]; then
+              grep -E '^(platform:|project:|storage:|  partition_name:|  file_name:|  partition_size:)' "$scatter" > "$out/scatter.txt" || true
+            fi
+
+            if [[ -n "$system" ]]; then
+              raw="$system"
+              if [[ "$(xxd -p -l 4 "$system")" == "3aff26ed" ]]; then
+                raw="$out/system.raw.img"
+                simg2img "$system" "$raw"
+              fi
+              file "$system" > "$out/system_filetype.txt"
+              file "$raw" >> "$out/system_filetype.txt"
+              7z x -y "$raw" -o"$out/system" >/dev/null 2>&1 || true
+              find "$out/system" -type f \( -name build.prop -o -name default.prop \) -print0 | while IFS= read -r -d '' p; do
+                grep -E '^(ro\.(build|product|board|hardware|secure|debuggable|adb|crypto|treble)|persist\.sys\.usb|persist\.service\.adb)' "$p" || true
+              done | sort -u > "$out/build_props.txt"
+              find "$out/system" -type f -iname '*.apk' -printf '%f\n' | sort -u > "$out/apks.txt"
+              find "$out/system" -type f \( -path '*/lib*/hw/*' -o -path '*/vendor/lib*/*camera*' -o -path '*/vendor/lib*/*audio*' -o -path '*/vendor/lib*/*wifi*' \) -print0 | while IFS= read -r -d '' f; do
+                printf '%s  %s\n' "$(sha256sum "$f" | awk '{print $1}')" "${f#"$out/system/"}"
+              done | sort > "$out/hardware_libs.txt"
+            fi
+
+            if [[ -n "$boot" ]]; then
+              (cd "$out/boot" && abootimg -x "$OLDPWD/$boot" >/dev/null 2>&1) || true
+              if [[ -f "$out/boot/initrd.img" ]]; then
+                type="$(file -b "$out/boot/initrd.img")"
+                case "$type" in
+                  *gzip*) (cd "$out/ramdisk" && gzip -dc ../boot/initrd.img | cpio -idm --no-absolute-filenames) >/dev/null 2>&1 || true ;;
+                  *LZ4*|*lz4*) (cd "$out/ramdisk" && lz4 -dc ../boot/initrd.img | cpio -idm --no-absolute-filenames) >/dev/null 2>&1 || true ;;
+                  *) (cd "$out/ramdisk" && cpio -idm --no-absolute-filenames < ../boot/initrd.img) >/dev/null 2>&1 || true ;;
+                esac
+              fi
+              find "$out/ramdisk" -type f \( -name 'fstab*' -o -name 'default.prop' -o -name 'init*.rc' \) -print0 | while IFS= read -r -d '' f; do
+                grep -Eni 'verify|verity|avb|forceencrypt|encryptable|ro\.secure|ro\.debuggable|ro\.adb\.secure|persist\.sys\.usb\.config' "$f" || true
+              done > "$out/boot_security.txt"
+            fi
+          }
+
+          analyze_one firmware-v1 fw1
+          analyze_one firmware-v2 fw2
+
+          {
+            echo '# Firmware v1 vs v2 comparison'
+            echo
+            for tag in firmware-v1 firmware-v2; do
+              echo "## $tag"
+              echo '```text'
+              cat "work/$tag/summary.txt"
+              echo
+              cat "work/$tag/system_filetype.txt" 2>/dev/null || true
+              echo '```'
+              echo
+              echo '### Build properties'
+              echo '```properties'
+              cat "work/$tag/build_props.txt" 2>/dev/null || true
+              echo '```'
+              echo
+              echo '### Boot verification/encryption clues'
+              echo '```text'
+              cat "work/$tag/boot_security.txt" 2>/dev/null || true
+              echo '```'
+            done
+
+            echo '## Scatter differences'
+            echo '```diff'
+            diff -u work/firmware-v1/scatter.txt work/firmware-v2/scatter.txt || true
+            echo '```'
+            echo
+            echo '## Build property differences'
+            echo '```diff'
+            diff -u work/firmware-v1/build_props.txt work/firmware-v2/build_props.txt || true
+            echo '```'
+            echo
+            echo '## Boot security differences'
+            echo '```diff'
+            diff -u work/firmware-v1/boot_security.txt work/firmware-v2/boot_security.txt || true
+            echo '```'
+            echo
+            echo '## APK filename differences'
+            echo '```diff'
+            diff -u work/firmware-v1/apks.txt work/firmware-v2/apks.txt || true
+            echo '```'
+            echo
+            echo '## Hardware library hash differences'
+            echo '```diff'
+            diff -u work/firmware-v1/hardware_libs.txt work/firmware-v2/hardware_libs.txt || true
+            echo '```'
+          } > report/firmware_comparison.md
+
+          tar -czf report/firmware-comparison-bundle.tar.gz work report/firmware_comparison.md
+          sed -n '1,420p' report/firmware_comparison.md
+
+      - name: Upload comparison report
+        uses: actions/upload-artifact@v4
+        with:
+          name: firmware-comparison
+          path: |
+            report/firmware_comparison.md
+            report/firmware-comparison-bundle.tar.gz
+          retention-days: 7
