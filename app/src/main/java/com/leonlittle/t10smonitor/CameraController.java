@@ -16,10 +16,10 @@ final class CameraController implements AutoCloseable {
     interface FrameSink { void accept(byte[] jpeg); }
 
     private static final String TAG = "T10sCamera";
-    private static final long FRAME_INTERVAL_MS = 100L;
-    private static final int JPEG_QUALITY = 80;
-    private static final int TARGET_WIDTH = 1920;
-    private static final int TARGET_HEIGHT = 1080;
+    private static final long FRAME_INTERVAL_MS = 200L;
+    private static final int JPEG_QUALITY = 65;
+    private static final int TARGET_WIDTH = 640;
+    private static final int TARGET_HEIGHT = 480;
     private final FrameSink sink;
     private Camera camera;
     private SurfaceTexture dummyTexture;
@@ -94,7 +94,7 @@ final class CameraController implements AutoCloseable {
         double pixelDifference = Math.abs(pixels - targetPixels) / (double) targetPixels;
         double targetRatio = TARGET_WIDTH / (double) TARGET_HEIGHT;
         double ratioDifference = Math.abs(size.width / (double) size.height - targetRatio);
-        // Prefer 16:9 strongly, so a 4:3 mode with similar pixels is not selected.
+        // Prefer the requested aspect ratio strongly so bandwidth stays predictable.
         return pixelDifference + ratioDifference * 3.0;
     }
 

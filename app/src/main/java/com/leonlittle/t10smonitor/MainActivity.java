@@ -40,7 +40,7 @@ public final class MainActivity extends Activity {
         String address = ip == null
                 ? "Wi-Fi连接后将显示地址"
                 : "http://" + ip + ":8080/";
-        status.setText("监控服务已启动（低延迟测试版 v0.3）\n" + address);
+        status.setText("监控服务已启动（流畅度测试版 v0.4）\n" + address);
     }
 
     @Override

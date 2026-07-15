@@ -70,6 +70,10 @@ final class MjpegServer implements AutoCloseable {
             String request = input.readLine();
             if (request == null) return;
             String path = request.split(" ").length > 1 ? request.split(" ")[1] : "/";
+            // Consume the complete request before replying. Closing a socket with unread
+            // request headers can reset the connection and make browsers back off for seconds.
+            String headerLine;
+            while ((headerLine = input.readLine()) != null && !headerLine.isEmpty()) { }
             BufferedOutputStream output = new BufferedOutputStream(client.getOutputStream());
             if (path.startsWith("/snapshot.jpg")) {
                 serveSnapshot(output);
