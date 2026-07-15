@@ -39,8 +39,9 @@ public final class MainActivity extends Activity {
         String ip = NetworkUtils.findWifiIpv4Address();
         String address = ip == null
                 ? "Wi-Fi连接后将显示地址"
-                : "http://" + ip + ":8080/";
-        status.setText("监控服务已启动（流畅度测试版 v0.4）\n" + address);
+                : "网页回退：http://" + ip + ":8080/\n"
+                + "H.264测试：http://" + ip + ":8081/live.h264";
+        status.setText("监控服务已启动（H.264实验版 v0.5）\n" + address);
     }
 
     @Override

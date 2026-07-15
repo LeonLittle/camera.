@@ -8,7 +8,9 @@ public final class BootReceiver extends BroadcastReceiver {
     @Override
     public void onReceive(Context context, Intent intent) {
         if (Intent.ACTION_BOOT_COMPLETED.equals(intent.getAction())) {
-            context.startService(new Intent(context, MonitorService.class));
+            Intent service = new Intent(context, MonitorService.class);
+            service.putExtra(MonitorService.EXTRA_SHOW_UI_AFTER_BOOT, true);
+            context.startService(service);
         }
     }
 }

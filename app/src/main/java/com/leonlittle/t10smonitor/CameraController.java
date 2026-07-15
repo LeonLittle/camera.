@@ -14,6 +14,7 @@ import java.util.List;
 @SuppressWarnings("deprecation")
 final class CameraController implements AutoCloseable {
     interface FrameSink { void accept(byte[] jpeg); }
+    interface EncodedFrameSink { void accept(byte[] h264, int flags); }
 
     private static final String TAG = "T10sCamera";
     private static final long FRAME_INTERVAL_MS = 200L;
@@ -21,12 +22,15 @@ final class CameraController implements AutoCloseable {
     private static final int TARGET_WIDTH = 640;
     private static final int TARGET_HEIGHT = 480;
     private final FrameSink sink;
+    private final EncodedFrameSink encodedSink;
     private Camera camera;
+    private H264Encoder encoder;
     private SurfaceTexture dummyTexture;
     private long lastFrameAt;
 
-    CameraController(FrameSink sink) {
+    CameraController(FrameSink sink, EncodedFrameSink encodedSink) {
         this.sink = sink;
+        this.encodedSink = encodedSink;
     }
 
     void start() {
@@ -43,6 +47,15 @@ final class CameraController implements AutoCloseable {
                 + ", JPEG quality=" + JPEG_QUALITY
                 + (fpsRange == null ? "" : ", HAL fps=" + fpsRange[0] / 1000f + "-" + fpsRange[1] / 1000f));
 
+        try {
+            encoder = new H264Encoder(selected.width, selected.height, encodedSink);
+            encoder.start();
+        } catch (RuntimeException error) {
+            Log.e(TAG, "H264 encoder unavailable; MJPEG fallback remains active", error);
+            if (encoder != null) encoder.close();
+            encoder = null;
+        }
+
         dummyTexture = new SurfaceTexture(17);
         try {
             camera.setPreviewTexture(dummyTexture);
@@ -55,9 +68,10 @@ final class CameraController implements AutoCloseable {
 
     private void publishAtLimitedRate(byte[] nv21, Camera source) {
         long now = System.currentTimeMillis();
+        Camera.Size size = source.getParameters().getPreviewSize();
+        if (encoder != null) encoder.offer(nv21, now * 1000L);
         if (now - lastFrameAt < FRAME_INTERVAL_MS) return;
         lastFrameAt = now;
-        Camera.Size size = source.getParameters().getPreviewSize();
         YuvImage image = new YuvImage(nv21, ImageFormat.NV21, size.width, size.height, null);
         ByteArrayOutputStream output = new ByteArrayOutputStream(512 * 1024);
         if (image.compressToJpeg(new Rect(0, 0, size.width, size.height), JPEG_QUALITY, output)) {
@@ -116,6 +130,10 @@ final class CameraController implements AutoCloseable {
 
     @Override
     public void close() {
+        if (encoder != null) {
+            encoder.close();
+            encoder = null;
+        }
         if (camera != null) {
             camera.setPreviewCallback(null);
             camera.stopPreview();
