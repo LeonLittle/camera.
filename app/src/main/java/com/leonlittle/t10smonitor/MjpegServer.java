@@ -14,7 +14,10 @@ import java.util.concurrent.atomic.AtomicReference;
 final class MjpegServer implements AutoCloseable {
     private static final String TAG = "T10sMjpeg";
     private static final byte[] HEADER = ("HTTP/1.1 200 OK\r\n"
-            + "Cache-Control: no-store\r\n"
+            + "Cache-Control: no-store, no-cache, must-revalidate, max-age=0\r\n"
+            + "Pragma: no-cache\r\n"
+            + "Expires: 0\r\n"
+            + "X-Accel-Buffering: no\r\n"
             + "Connection: close\r\n"
             + "Content-Type: multipart/x-mixed-replace; boundary=frame\r\n\r\n")
             .getBytes(StandardCharsets.US_ASCII);

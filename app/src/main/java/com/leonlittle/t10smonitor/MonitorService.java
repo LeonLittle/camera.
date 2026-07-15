@@ -34,6 +34,7 @@ public final class MonitorService extends Service {
 
         server = new MjpegServer(8080);
         server.start();
+        CodecDiagnostics.logAvcEncoders();
         camera = new CameraController(server::publish);
         try {
             camera.start();

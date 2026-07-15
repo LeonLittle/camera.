@@ -36,7 +36,11 @@ public final class MainActivity extends Activity {
             }
         }
         startService(new Intent(this, MonitorService.class));
-        status.setText("监控服务已启动\n局域网预览：http://设备IP:8080/live.mjpg");
+        String ip = NetworkUtils.findWifiIpv4Address();
+        String address = ip == null
+                ? "Wi-Fi连接后将显示地址"
+                : "http://" + ip + ":8080/live.mjpg";
+        status.setText("监控服务已启动（性能测试版 v0.2）\n" + address);
     }
 
     @Override
