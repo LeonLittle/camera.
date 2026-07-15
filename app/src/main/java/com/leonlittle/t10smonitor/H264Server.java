@@ -4,7 +4,9 @@ import android.media.MediaCodec;
 import android.util.Log;
 
 import java.io.BufferedOutputStream;
+import java.io.BufferedReader;
 import java.io.IOException;
+import java.io.InputStreamReader;
 import java.net.ServerSocket;
 import java.net.Socket;
 import java.nio.charset.StandardCharsets;
@@ -67,6 +69,12 @@ final class H264Server implements AutoCloseable {
                  BufferedOutputStream output = new BufferedOutputStream(client.getOutputStream())) {
                 client.setTcpNoDelay(true);
                 client.setSendBufferSize(64 * 1024);
+                BufferedReader input = new BufferedReader(new InputStreamReader(
+                        client.getInputStream(), StandardCharsets.US_ASCII));
+                String request = input.readLine();
+                if (request == null || !request.contains("/live.h264")) return;
+                String headerLine;
+                while ((headerLine = input.readLine()) != null && !headerLine.isEmpty()) { }
                 output.write(HTTP_HEADER);
                 byte[] config = codecConfig;
                 if (config != null) output.write(config);

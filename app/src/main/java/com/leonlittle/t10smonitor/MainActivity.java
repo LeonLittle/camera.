@@ -41,7 +41,7 @@ public final class MainActivity extends Activity {
                 ? "Wi-Fi连接后将显示地址"
                 : "网页回退：http://" + ip + ":8080/\n"
                 + "H.264测试：http://" + ip + ":8081/live.h264";
-        status.setText("监控服务已启动（H.264实验版 v0.5）\n" + address);
+        status.setText("监控服务已启动（H.264兼容测试版 v0.6）\n" + address);
     }
 
     @Override
